@@ -1,0 +1,131 @@
+```{r}
+library(httr)
+library(rvest)
+library(tidyverse)
+if(!require ('RSelenium')) {
+  install.packages('RSelenium')
+}
+```
+
+```{r}
+# set up user agent for access
+uastring <- "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.71 Safari/537.36"
+
+```
+
+As of September, SocialBlade is protected with CloudFlare against DDOS attacks, so traditional scrapers don't work (no script tag)
+
+```{r}
+graphs.url <- 'https://socialblade.com/youtube/channel/UCkZFKKK-0YB0FvwoS8P7nHg/monthly'
+
+graph.page <- GET(graphs.url, user_agent(uastring))
+
+graph.parsed <- read_html(graph.page)
+
+# script next to the chart contains the raw data (fed by server request?)
+
+# adapt the following with relevant graph ID:
+# #TotalSubscribers + script
+# #DailyVideoViews + script
+# #TotalVideoViews + script
+# #AverageViewsPerDay + script
+# #AverageViewsPerMonth + script
+
+script.stats <- graph.parsed %>% html_nodes('script')
+script.stats
+
+# parse the text content of the script; actual data is last item
+script.textlist <- xml_text(script.stats) %>% 
+  str_split(., pattern = '\n')
+
+script.table <- script.textlist[[1]][7] 
+```
+
+
+```{r}
+script.table %>%  # regex - split @ plus sign
+  str_split(., pattern = '\\s[+]\\s') -> script.list
+
+# clean up and filter the data
+# during the clean-up, mind escape characters (ex. when removing double backslash)
+# use this process for all charts, just change the column names
+script.df <- data.frame(script.list)
+
+colname.script <- names(script.df)[1]
+# when the chart is updated "header" changes too
+# by assigning it to a variable, it should work regardless
+
+script.df %>% 
+  separate(colname.script, into = c('Date', 'subs'), sep = ',')  %>% 
+  mutate(Date = str_replace_all(Date, '"', ''), subs = trimws(subs)) %>%
+  mutate(subs = str_replace(subs, '\\\\n\"', '')) %>% 
+  filter(!grepl('Daily', subs)) -> stats.subs
+
+script.df
+```
+
+
+
+```{r}
+# automate web browser
+# install the RSelenium package and download + install Docker container
+
+# set the remote driver with browser, port, and chrome version
+# set as a client
+# execute rsDriver
+dR <- rsDriver(port = 4567L, browser = 'chrome', verbose = TRUE, chromever = '76.0.3809.126')
+remDr <- dR[["client"]]
+remDr <- remoteDriver(remoteServerAddr = "localhost", port = 4445L, browserName = "chrome")
+
+# open browser, navigate to page
+remDr$open()
+remDr$navigate(graphs.url)
+
+# screenshot page and display in viewer
+remDr$screenshot(display = TRUE)
+remDr$maxWindowSize()
+
+# AVERAGE VIEWS PER DAY SCRIPT (adapt for other charts by changing ID)
+
+scrapescript <- remDr$executeScript('return document.querySelector("#AverageViewsPerDay + script").textContent')
+
+# from here on it's the same as the previous script
+table.data <- str_split(scrapescript, '\\n')[[1]][7] %>% 
+  str_split(., pattern = '\\s[+]\\s') %>% 
+  data.frame(.)
+
+clean.table <- table.data %>% 
+    separate(names(table.data)[1], into = c('Date', 'subs'), sep = ',')  %>% 
+  mutate(Date = str_replace_all(Date, '"', ''), subs = trimws(subs)) %>%
+  mutate(subs = str_replace(subs, '\\\\n\"', ''))
+
+# this is only at the end, when you've finished scraping
+# close the client, remove the driver and clean up
+remDr$close()
+rm(dR)
+gc()
+
+# if JavaScriptError --> copy data manually from page using console
+# # browser --> inspect --> console
+# # document.querySelector('#AverageViewsPerDay + script').textContent
+# # copy data starting from "Date,Daily Subs... 
+# # paste into txt file (TextEdit --> make plaintext --> save)
+
+```
+
+```{r}
+# read table
+stats.table <- readLines('../Desktop/SocialBlade/LT/Data/10_NonCompete_AverageViewsPerDay_SocialBlade.txt') %>% 
+  str_split(., pattern = '\\s[+]\\s') %>% 
+  data.frame()
+
+# clean up
+stats.clean <- stats.table %>% 
+  separate(names(stats.table)[1], into = c('Date', 'subs'), sep = ',') %>% 
+  mutate(Date = str_replace_all(Date, '\\\\"', ''), subs = str_replace(subs, '\\\\\\\\n\\\\"', '')) %>% 
+  filter(Date != 'Date')
+
+write.table(stats.table, file="../Desktop/SocialBlade/LT/Graphs/10_Vaush_AverageViewsPerDay_SocialBlade.csv", row.names=F, sep=",")
+
+```
+
